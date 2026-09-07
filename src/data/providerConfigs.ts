@@ -1,0 +1,98 @@
+import { EmailProviderConfigRecord } from '../types';
+import { CryptoService } from '../utils/cryptoSim';
+
+export const INITIAL_EMAIL_PROVIDER_CONFIGS: EmailProviderConfigRecord[] = [
+  {
+    id: 'ESP-CFG-SES-01',
+    provider: 'amazon_ses',
+    name: 'Amazon Simple Email Service (SES)',
+    api_key_encrypted: CryptoService.encrypt('AKIAIOSFODNN7EXAMPLE'),
+    secret_encrypted: CryptoService.encrypt('wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'),
+    region: 'us-east-1',
+    from_email: 'campaigns@notifications.digisoft.com',
+    from_name: 'DIGISOFT Enterprise Communications',
+    reply_to: 'support@digisoft.com',
+    status: 'active',
+    is_default: true,
+    settings: {
+      rate_limit_per_second: 80,
+      provider_max_rate: 100,
+      daily_quota: 50000,
+      daily_sent: 1420,
+      safety_margin_percentage: 20,
+      burst_limit: 150,
+      track_opens: true,
+      track_clicks: true,
+      sandbox_mode: false,
+      connection_verified_at: '2026-09-04T08:00:00Z',
+      sender_verified_at: '2026-09-04T08:00:00Z',
+      spf_verified: true,
+      dkim_verified: true,
+      dmarc_verified: true
+    },
+    created_at: '2026-08-15T10:00:00Z',
+    updated_at: '2026-09-04T08:00:00Z'
+  },
+  {
+    id: 'ESP-CFG-BREVO-02',
+    provider: 'brevo',
+    name: 'Brevo (formerly Sendinblue) Marketing Cloud',
+    api_key_encrypted: CryptoService.encrypt('xkeysib-89fa210984decf4563a1-778899aabbccddeeff'),
+    secret_encrypted: CryptoService.encrypt('whsec_brevo_signing_secret_99812'),
+    region: 'eu-west-1',
+    from_email: 'updates@marketing.digisoft.com',
+    from_name: 'DIGISOFT News & Updates',
+    reply_to: 'marketing@digisoft.com',
+    status: 'standby',
+    is_default: false,
+    settings: {
+      rate_limit_per_second: 64,
+      provider_max_rate: 80,
+      daily_quota: 40000,
+      daily_sent: 850,
+      safety_margin_percentage: 20,
+      burst_limit: 100,
+      track_opens: true,
+      track_clicks: true,
+      sandbox_mode: false,
+      connection_verified_at: '2026-09-03T14:30:00Z',
+      sender_verified_at: '2026-09-03T14:30:00Z',
+      spf_verified: true,
+      dkim_verified: true,
+      dmarc_verified: true
+    },
+    created_at: '2026-08-20T12:00:00Z',
+    updated_at: '2026-09-03T14:30:00Z'
+  },
+  {
+    id: 'ESP-CFG-SENDGRID-03',
+    provider: 'sendgrid',
+    name: 'Twilio SendGrid Transactional & Marketing API',
+    api_key_encrypted: CryptoService.encrypt('SG.298fa7d9e871234.qwertyuiopasdfghjklzxcvbnm1234567890'),
+    secret_encrypted: CryptoService.encrypt('whsec_sendgrid_event_webhook_v3'),
+    region: 'global',
+    from_email: 'billing@accounts.digisoft.com',
+    from_name: 'DIGISOFT Financial Statements',
+    reply_to: 'accounts@digisoft.com',
+    status: 'standby',
+    is_default: false,
+    settings: {
+      rate_limit_per_second: 80,
+      provider_max_rate: 100,
+      daily_quota: 100000,
+      daily_sent: 2100,
+      safety_margin_percentage: 20,
+      burst_limit: 150,
+      track_opens: true,
+      track_clicks: true,
+      sandbox_mode: false,
+      connection_verified_at: '2026-09-02T11:15:00Z',
+      sender_verified_at: '2026-09-02T11:15:00Z',
+      spf_verified: true,
+      dkim_verified: true,
+      dmarc_verified: false
+    },
+    created_at: '2026-08-22T09:30:00Z',
+    updated_at: '2026-09-02T11:15:00Z'
+  }
+];

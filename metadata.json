@@ -1,0 +1,7 @@
+{
+  "name": "DIGISOFT CRM – Email Marketing & Campaign Automation",
+  "description": "Enterprise email marketing & campaign automation module with TallyPrime sync, dynamic segmentation, AI structured email generation, provider-agnostic ESP delivery engine, webhook event processing, idempotency, automated suppression, and campaign analytics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+

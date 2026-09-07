@@ -1,0 +1,1221 @@
+import React, { useState, useMemo } from 'react';
+import { 
+  ArrowLeft, 
+  ArrowRight, 
+  Check, 
+  Sparkles, 
+  Users, 
+  FileText, 
+  Send, 
+  Eye, 
+  CheckCircle2, 
+  AlertTriangle, 
+  Clock, 
+  ShieldCheck, 
+  Smartphone, 
+  Monitor, 
+  Code, 
+  Inbox, 
+  Plus, 
+  Search,
+  Tag,
+  Calendar,
+  Layers,
+  FileCheck,
+  CheckSquare,
+  Square,
+  Mail
+} from 'lucide-react';
+import { 
+  Campaign, 
+  CampaignType, 
+  CampaignStatus, 
+  Segment, 
+  Contact, 
+  AudienceSelection, 
+  AudienceType,
+  StructuredEmailContent, 
+  ManagedEmailTemplate,
+  PreSendValidationReport
+} from '../types';
+import { EMAIL_TEMPLATES_LIST, renderEmailTemplate, analyzeDeliverability } from '../utils/templateEngine';
+import { CampaignValidationService } from '../utils/campaignValidation';
+import { AiContentAssistant } from './AiContentAssistant';
+
+interface CampaignWizardProps {
+  segments: Segment[];
+  contacts: Contact[];
+  managedTemplates?: ManagedEmailTemplate[];
+  preselectedSegment?: Segment | null;
+  onSaveDraft: (campaign: Partial<Campaign>) => void;
+  onSubmitReview: (campaign: Partial<Campaign>) => void;
+  onApproveAndDispatch: (campaign: Partial<Campaign>, scheduleDate?: string | null) => void;
+  onSendTestEmail: (email: { to: string; subject: string; html: string; campaignName: string }) => void;
+  onCancel: () => void;
+}
+
+export const CampaignWizard: React.FC<CampaignWizardProps> = ({
+  segments,
+  contacts,
+  managedTemplates = [],
+  preselectedSegment,
+  onSaveDraft,
+  onSubmitReview,
+  onApproveAndDispatch,
+  onSendTestEmail,
+  onCancel
+}) => {
+  // Wizard steps: 1 through 8
+  const [currentStep, setCurrentStep] = useState<1 | 2 | 3 | 4 | 5 | 6 | 7 | 8>(1);
+
+  // STEP 1: CAMPAIGN DETAILS
+  const [name, setName] = useState('Q4 Tally Outstanding Recovery & Renewal');
+  const [campaignType, setCampaignType] = useState<CampaignType>('Renewal');
+  const [fromName, setFromName] = useState('DIGISOFT Accounts Desk');
+  const [fromEmail, setFromEmail] = useState('billing@notifications.digisoft.com');
+  const [replyTo, setReplyTo] = useState('accounts@digisoft.com');
+
+  // STEP 2: AUDIENCE SELECTION
+  const [audienceType, setAudienceType] = useState<AudienceType>(
+    preselectedSegment ? 'segment' : 'segment'
+  );
+  const [selectedSegmentId, setSelectedSegmentId] = useState<string>(
+    preselectedSegment?.id || segments[0]?.id || ''
+  );
+  const [selectedTags, setSelectedTags] = useState<string[]>(['TallyPrime Customer']);
+  const [selectedContactIds, setSelectedContactIds] = useState<string[]>([]);
+  const [contactSearch, setContactSearch] = useState('');
+
+  // Extract all distinct tags across contacts
+  const allAvailableTags = useMemo(() => {
+    const tagsSet = new Set<string>();
+    contacts.forEach(c => c.tags?.forEach(t => tagsSet.add(t)));
+    return Array.from(tagsSet);
+  }, [contacts]);
+
+  // Current Audience Selection object
+  const audienceSelection: AudienceSelection = useMemo(() => {
+    const seg = segments.find(s => s.id === selectedSegmentId);
+    return {
+      type: audienceType,
+      segmentId: selectedSegmentId,
+      segmentName: seg?.name || 'Selected Segment',
+      tags: selectedTags,
+      contactIds: selectedContactIds,
+      importId: 'BATCH-LATEST-IMPORT',
+      importFileName: 'Tally_Ledgers_September.xml'
+    };
+  }, [audienceType, selectedSegmentId, segments, selectedTags, selectedContactIds]);
+
+  // STEP 3: CONTENT (Manual vs AI Generated)
+  const [contentMode, setContentMode] = useState<'manual' | 'ai'>('ai');
+  const [subject, setSubject] = useState('Urgent: Account Ledger Reconciliation Required for {{contact.company}}');
+  const [preheader, setPreheader] = useState('Please review your outstanding balance of {{tally.outstanding_balance}} to ensure uninterrupted credit.');
+  const [headline, setHeadline] = useState('Pending Ledger Statement Reconciliation');
+  const [greeting, setGreeting] = useState('Dear {{contact.first_name}},');
+  const [bodyParagraphs, setBodyParagraphs] = useState<string[]>([
+    'We hope this email finds you well. As part of our periodic financial close, our TallyPrime ledger accounts indicate an outstanding balance of {{tally.outstanding_balance}} pending clearance.',
+    'According to our commercial credit terms (30 Days), this payment is currently {{tally.overdue_days}} days past its due date. We kindly request you to review your invoice statement.'
+  ]);
+  const [bulletPoints, setBulletPoints] = useState<string[]>([
+    'Registered Party GSTIN: Verified in Tally records',
+    'Net Overdue Amount: {{tally.outstanding_balance}}',
+    'Ageing Duration: {{tally.overdue_days}} Days Past Terms'
+  ]);
+  const [ctaText, setCtaText] = useState('View Statement & Reconcile Now');
+  const [ctaUrl, setCtaUrl] = useState('https://billing.digisoft.com/portal/reconcile');
+  const [footerNotes, setFooterNotes] = useState('This is an automated financial notification generated by DIGISOFT CRM connected to TallyPrime.');
+
+  // Structured content object
+  const structuredContent: StructuredEmailContent = useMemo(() => ({
+    subject,
+    preheader,
+    headline,
+    greeting,
+    bodyParagraphs,
+    bulletPoints,
+    ctaText,
+    ctaUrlSuggestion: ctaUrl,
+    footerNotes
+  }), [subject, preheader, headline, greeting, bodyParagraphs, bulletPoints, ctaText, ctaUrl, footerNotes]);
+
+  // STEP 4: TEMPLATE
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>('tally_payment_reminder');
+
+  // STEP 5: PREVIEW
+  const [devicePreview, setDevicePreview] = useState<'desktop' | 'mobile' | 'code'>('desktop');
+  const [previewContactIndex, setPreviewContactIndex] = useState(0);
+
+  // Compute rendered HTML
+  const sampleContact = contacts[previewContactIndex] || contacts[0] || {
+    id: 'sample',
+    firstName: 'Bhuvan',
+    lastName: 'Gupta',
+    companyName: 'Apex Infotech Solutions',
+    email: 'bhuvangupta.1711@gmail.com',
+    tallyOutstandingBalance: 145200,
+    tallyOverdueDays: 48,
+    unsubscribeToken: 'unsub-preview-demo'
+  } as Contact;
+
+  const renderedHtml = useMemo(() => {
+    let html = renderEmailTemplate(selectedTemplateId, structuredContent, sampleContact);
+    // Ensure standard unsubscribe URL placeholder is present for compliance check
+    if (!html.includes('{{UNSUBSCRIBE_URL}}') && !html.includes('unsubscribe')) {
+      html += '<div style="text-align:center;padding:16px;font-size:12px;color:#94a3b8;"><a href="{{UNSUBSCRIBE_URL}}">Unsubscribe</a></div>';
+    }
+    return html;
+  }, [selectedTemplateId, structuredContent, sampleContact]);
+
+  const plainTextContent = useMemo(() => {
+    return `${headline}\n\n${greeting}\n\n${bodyParagraphs.join('\n\n')}\n\n${bulletPoints.map(b => `• ${b}`).join('\n')}\n\n${ctaText}: ${ctaUrl}\n\n${footerNotes}\n\nUnsubscribe: {{UNSUBSCRIBE_URL}}`;
+  }, [headline, greeting, bodyParagraphs, bulletPoints, ctaText, ctaUrl, footerNotes]);
+
+  // STEP 6: TEST EMAIL
+  const [testEmailAddress, setTestEmailAddress] = useState('bhuvangupta.1711@gmail.com');
+  const [testEmailSentSuccess, setTestEmailSentSuccess] = useState(false);
+  const [isSendingTest, setIsSendingTest] = useState(false);
+
+  // STEP 7: PRE-SEND VALIDATION REPORT
+  const validationReport: PreSendValidationReport = useMemo(() => {
+    return CampaignValidationService.runPreSendValidation({
+      subject,
+      htmlContent: renderedHtml,
+      fromEmail,
+      fromName,
+      audience: audienceSelection,
+      allContacts: contacts,
+      allSegments: segments
+    });
+  }, [subject, renderedHtml, fromEmail, fromName, audienceSelection, contacts, segments]);
+
+  // Deliverability spam score
+  const deliverabilityScore = useMemo(() => {
+    return analyzeDeliverability(subject, preheader, renderedHtml);
+  }, [subject, preheader, renderedHtml]);
+
+  // STEP 8: SCHEDULE & DISPATCH
+  const [sendTiming, setSendTiming] = useState<'immediate' | 'scheduled'>('immediate');
+  const [scheduledDateTime, setScheduledDateTime] = useState(
+    new Date(Date.now() + 86400000).toISOString().slice(0, 16)
+  );
+  const [espProvider, setEspProvider] = useState<'amazon_ses' | 'brevo' | 'sendgrid'>('amazon_ses');
+  const [chunkSize, setChunkSize] = useState(500);
+  const [rateLimit, setRateLimit] = useState(50);
+  const [isApprovedByManager, setIsApprovedByManager] = useState(false);
+
+  // Handle AI Generated Content Acceptance
+  const handleAiContentAccepted = (aiContent: StructuredEmailContent) => {
+    if (aiContent.subject) setSubject(aiContent.subject);
+    if (aiContent.preheader) setPreheader(aiContent.preheader);
+    if (aiContent.headline) setHeadline(aiContent.headline);
+    if (aiContent.greeting) setGreeting(aiContent.greeting);
+    if (aiContent.bodyParagraphs) setBodyParagraphs(aiContent.bodyParagraphs);
+    if (aiContent.bulletPoints) setBulletPoints(aiContent.bulletPoints);
+    if (aiContent.ctaText) setCtaText(aiContent.ctaText);
+    if (aiContent.ctaUrlSuggestion) setCtaUrl(aiContent.ctaUrlSuggestion);
+    if (aiContent.footerNotes) setFooterNotes(aiContent.footerNotes);
+    setContentMode('manual'); // Switch to view/edit
+  };
+
+  // Trigger Send Test
+  const handleSendTest = () => {
+    if (!testEmailAddress) return;
+    setIsSendingTest(true);
+    setTimeout(() => {
+      onSendTestEmail({
+        to: testEmailAddress,
+        subject: `[TEST] ${subject}`,
+        html: renderedHtml,
+        campaignName: name
+      });
+      setIsSendingTest(false);
+      setTestEmailSentSuccess(true);
+    }, 600);
+  };
+
+  // Compile full Campaign Payload
+  const buildCampaignPayload = (status: CampaignStatus): Partial<Campaign> => {
+    const snapshot = CampaignValidationService.createRecipientSnapshot(
+      `CMP-${Date.now().toString().slice(-4)}`,
+      audienceSelection,
+      contacts,
+      segments
+    );
+
+    return {
+      name,
+      campaign_type: campaignType,
+      subject,
+      preheader,
+      email_template_id: selectedTemplateId,
+      html_content: renderedHtml,
+      plain_text_content: plainTextContent,
+      from_name: fromName,
+      from_email: fromEmail,
+      reply_to: replyTo,
+      status,
+      audience: audienceSelection,
+      esp_provider: espProvider,
+      chunk_size: chunkSize,
+      rate_limit_per_second: rateLimit,
+      recipients_snapshot: snapshot,
+      pre_send_validation: validationReport,
+      structured_content: structuredContent,
+      metrics: {
+        totalRecipients: snapshot.filter(s => s.status !== 'EXCLUDED').length,
+        sentCount: 0,
+        deliveredCount: 0,
+        openedCount: 0,
+        clickedCount: 0,
+        bouncedHardCount: 0,
+        bouncedSoftCount: 0,
+        unsubscribedCount: 0,
+        complainedCount: 0
+      },
+      // Backward compatibility:
+      objective: campaignType,
+      senderName: fromName,
+      senderEmail: fromEmail,
+      replyToEmail: replyTo,
+      segmentId: selectedSegmentId,
+      segmentName: audienceSelection.segmentName,
+      templateId: selectedTemplateId as any,
+      espProvider,
+      chunkSize,
+      rateLimitPerSecond: rateLimit,
+      scheduledAt: sendTiming === 'scheduled' ? new Date(scheduledDateTime).toISOString() : undefined,
+      structuredContent
+    };
+  };
+
+  const stepsList = [
+    { num: 1, title: 'Details' },
+    { num: 2, title: 'Audience' },
+    { num: 3, title: 'Content' },
+    { num: 4, title: 'Template' },
+    { num: 5, title: 'Preview' },
+    { num: 6, title: 'Test Email' },
+    { num: 7, title: 'Review' },
+    { num: 8, title: 'Schedule' },
+  ];
+
+  return (
+    <div className="bg-white rounded-xl shadow-xs border border-slate-200 overflow-hidden">
+      
+      {/* Wizard Step Indicator */}
+      <div className="border-b border-slate-200 bg-slate-50/70 px-6 py-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
+              <span className="w-6 h-6 rounded-full bg-indigo-600 text-white text-xs flex items-center justify-center font-bold">
+                {currentStep}
+              </span>
+              Campaign Wizard: Step {currentStep} of 8 — {stepsList[currentStep - 1]?.title}
+            </h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Follow the guided sequence to configure, validate, test, and approve your email campaign.
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={onCancel}
+              className="px-3 py-1.5 text-xs text-slate-600 hover:text-slate-900 border border-slate-300 rounded-lg bg-white"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => onSaveDraft(buildCampaignPayload('DRAFT'))}
+              className="px-3 py-1.5 text-xs text-indigo-700 hover:text-indigo-900 border border-indigo-200 rounded-lg bg-indigo-50 font-medium"
+            >
+              Save as Draft
+            </button>
+          </div>
+        </div>
+
+        {/* 8-Step Progress Pills */}
+        <div className="grid grid-cols-4 sm:grid-cols-8 gap-2 mt-4">
+          {stepsList.map(s => {
+            const isPassed = currentStep > s.num;
+            const isCurrent = currentStep === s.num;
+            return (
+              <button
+                key={s.num}
+                onClick={() => setCurrentStep(s.num as any)}
+                className={`flex items-center gap-1.5 p-2 rounded-lg text-left transition-colors border ${
+                  isCurrent
+                    ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
+                    : isPassed
+                    ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                    : 'bg-white text-slate-500 border-slate-200'
+                }`}
+              >
+                <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] font-bold ${
+                  isCurrent ? 'bg-white text-indigo-600' : isPassed ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-600'
+                }`}>
+                  {isPassed ? <Check className="w-2.5 h-2.5" /> : s.num}
+                </span>
+                <span className="text-xs font-semibold truncate">{s.title}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Step Body */}
+      <div className="p-6">
+
+        {/* STEP 1: CAMPAIGN DETAILS */}
+        {currentStep === 1 && (
+          <div className="max-w-2xl mx-auto space-y-5">
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                Campaign Name *
+              </label>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="e.g. Q4 Overdue Accounts Ledger Statement"
+                className="w-full px-3.5 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+              />
+              <p className="text-xs text-slate-400 mt-1">Internal administrative name for auditing and telemetry tracking.</p>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                Campaign Type *
+              </label>
+              <select
+                value={campaignType}
+                onChange={(e) => setCampaignType(e.target.value as CampaignType)}
+                className="w-full px-3.5 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:outline-none bg-white"
+              >
+                <option value="Promotional">Promotional</option>
+                <option value="Informational">Informational</option>
+                <option value="Newsletter">Newsletter</option>
+                <option value="Festival Greeting">Festival Greeting</option>
+                <option value="Product Launch">Product Launch</option>
+                <option value="Renewal">Renewal</option>
+                <option value="Upgrade">Upgrade</option>
+                <option value="Event Invitation">Event Invitation</option>
+              </select>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                  From Name *
+                </label>
+                <input
+                  type="text"
+                  value={fromName}
+                  onChange={(e) => setFromName(e.target.value)}
+                  placeholder="e.g. DIGISOFT Accounts Desk"
+                  className="w-full px-3.5 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                  From Email *
+                </label>
+                <input
+                  type="email"
+                  value={fromEmail}
+                  onChange={(e) => setFromEmail(e.target.value)}
+                  placeholder="billing@notifications.digisoft.com"
+                  className="w-full px-3.5 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                Reply-To Email Address
+              </label>
+              <input
+                type="email"
+                value={replyTo}
+                onChange={(e) => setReplyTo(e.target.value)}
+                placeholder="accounts@digisoft.com"
+                className="w-full px-3.5 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+              />
+              <p className="text-xs text-slate-400 mt-1">Recipient replies will route to this commercial inbox.</p>
+            </div>
+          </div>
+        )}
+
+        {/* STEP 2: AUDIENCE SELECTION */}
+        {currentStep === 2 && (
+          <div className="max-w-3xl mx-auto space-y-6">
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-2">
+                Select Audience Targeting Mode
+              </label>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                {[
+                  { id: 'segment', title: 'Dynamic Segment', icon: Layers, desc: 'Rule-based segment query' },
+                  { id: 'tags', title: 'Contact Tags', icon: Tag, desc: 'Grouped by CRM or Tally tags' },
+                  { id: 'individual_contacts', title: 'Individual Contacts', icon: Users, desc: 'Hand-picked contacts' },
+                  { id: 'imported_list', title: 'Imported List', icon: FileCheck, desc: 'Spreadsheet batch upload' },
+                ].map(mode => {
+                  const Icon = mode.icon;
+                  const isSelected = audienceType === mode.id;
+                  return (
+                    <button
+                      key={mode.id}
+                      type="button"
+                      onClick={() => setAudienceType(mode.id as AudienceType)}
+                      className={`p-3.5 rounded-lg border text-left transition-all ${
+                        isSelected
+                          ? 'border-indigo-600 bg-indigo-50/70 ring-2 ring-indigo-500/20'
+                          : 'border-slate-200 hover:border-slate-300 bg-white'
+                      }`}
+                    >
+                      <Icon className={`w-5 h-5 mb-1.5 ${isSelected ? 'text-indigo-600' : 'text-slate-400'}`} />
+                      <div className="text-xs font-bold text-slate-900">{mode.title}</div>
+                      <div className="text-[11px] text-slate-500 mt-0.5">{mode.desc}</div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Mode-specific configuration */}
+            {audienceType === 'segment' && (
+              <div className="p-4 bg-slate-50 rounded-lg border border-slate-200 space-y-3">
+                <label className="block text-xs font-semibold text-slate-700">Choose Existing Segment</label>
+                <select
+                  value={selectedSegmentId}
+                  onChange={(e) => setSelectedSegmentId(e.target.value)}
+                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg bg-white focus:ring-1 focus:ring-indigo-500"
+                >
+                  {segments.map(s => (
+                    <option key={s.id} value={s.id}>
+                      {s.name} ({s.totalContacts ?? s.estimatedCount ?? 0} Contacts)
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {audienceType === 'tags' && (
+              <div className="p-4 bg-slate-50 rounded-lg border border-slate-200 space-y-3">
+                <label className="block text-xs font-semibold text-slate-700">Select Target Tags (OR union)</label>
+                <div className="flex flex-wrap gap-2">
+                  {allAvailableTags.map(tag => {
+                    const isSelected = selectedTags.includes(tag);
+                    return (
+                      <button
+                        key={tag}
+                        type="button"
+                        onClick={() => {
+                          setSelectedTags(prev => 
+                            isSelected ? prev.filter(t => t !== tag) : [...prev, tag]
+                          );
+                        }}
+                        className={`px-3 py-1.5 rounded-full text-xs font-medium border flex items-center gap-1.5 transition-colors ${
+                          isSelected
+                            ? 'bg-indigo-600 text-white border-indigo-600'
+                            : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
+                        }`}
+                      >
+                        <Tag className="w-3 h-3" />
+                        {tag}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {audienceType === 'individual_contacts' && (
+              <div className="p-4 bg-slate-50 rounded-lg border border-slate-200 space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-semibold text-slate-700">
+                    Select Contacts ({selectedContactIds.length} Selected)
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (selectedContactIds.length === contacts.length) {
+                        setSelectedContactIds([]);
+                      } else {
+                        setSelectedContactIds(contacts.map(c => c.id));
+                      }
+                    }}
+                    className="text-xs text-indigo-600 hover:underline font-medium"
+                  >
+                    {selectedContactIds.length === contacts.length ? 'Deselect All' : 'Select All'}
+                  </button>
+                </div>
+
+                <div className="max-h-60 overflow-y-auto divide-y divide-slate-200 bg-white rounded-lg border border-slate-200">
+                  {contacts.map(c => {
+                    const isChecked = selectedContactIds.includes(c.id);
+                    return (
+                      <div
+                        key={c.id}
+                        onClick={() => {
+                          setSelectedContactIds(prev => 
+                            isChecked ? prev.filter(id => id !== c.id) : [...prev, c.id]
+                          );
+                        }}
+                        className="px-3 py-2 flex items-center justify-between hover:bg-slate-50 cursor-pointer text-xs"
+                      >
+                        <div>
+                          <div className="font-semibold text-slate-800">{c.firstName} {c.lastName} ({c.companyName})</div>
+                          <div className="text-slate-500">{c.email}</div>
+                        </div>
+                        {isChecked ? (
+                          <CheckSquare className="w-4 h-4 text-indigo-600" />
+                        ) : (
+                          <Square className="w-4 h-4 text-slate-300" />
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {audienceType === 'imported_list' && (
+              <div className="p-4 bg-slate-50 rounded-lg border border-slate-200 space-y-2">
+                <div className="text-xs font-semibold text-slate-700">Imported File Batch</div>
+                <div className="p-3 bg-white rounded border border-slate-200 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <FileCheck className="w-4 h-4 text-emerald-600" />
+                    <span className="text-xs font-medium text-slate-800">Tally_Ledgers_September.xml</span>
+                  </div>
+                  <span className="text-xs text-slate-500">Auto-mapped 42 contacts</span>
+                </div>
+              </div>
+            )}
+
+            {/* Live Pre-Send Exclusion & Net Audience Breakdown Box */}
+            <div className="p-4 bg-indigo-50/50 rounded-lg border border-indigo-200 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-800">Audience Calculation & Exclusions Preview:</span>
+                <span className="text-xs font-bold text-indigo-700">
+                  {validationReport.counts.validRecipientsCount} Deliverable Contacts
+                </span>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs text-slate-600 pt-1">
+                <div>Total Targeted: <strong className="text-slate-900">{validationReport.counts.totalAudienceCount}</strong></div>
+                <div>Unsubscribed: <strong className="text-amber-600">{validationReport.counts.unsubscribedCount}</strong></div>
+                <div>Bounced / Invalid: <strong className="text-rose-600">{validationReport.counts.bouncedCount + validationReport.counts.invalidCount}</strong></div>
+                <div>Suppressed: <strong className="text-slate-700">{validationReport.counts.suppressedCount}</strong></div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* STEP 3: CONTENT (Manual Content vs AI Generated Content) */}
+        {currentStep === 3 && (
+          <div className="space-y-6">
+            <div className="flex items-center justify-between border-b pb-4">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">Email Campaign Content</h3>
+                <p className="text-xs text-slate-500">
+                  Generate structured JSON content via AI or draft manually using merge variables.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg border border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => setContentMode('manual')}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${
+                    contentMode === 'manual' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Manual Content
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setContentMode('ai')}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-md flex items-center gap-1.5 transition-colors ${
+                    contentMode === 'ai' ? 'bg-indigo-600 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                  AI Generated Content
+                </button>
+              </div>
+            </div>
+
+            {/* AI Generation Mode: Embedded Phase 6 Assistant */}
+            {contentMode === 'ai' && (
+              <div className="p-4 bg-slate-50/60 rounded-xl border border-slate-200">
+                <AiContentAssistant
+                  initialBrief={{
+                    campaignObjective: campaignType === 'Renewal' ? 'Collect overdue invoice balance from Tally debtor' : `${campaignType} campaign`,
+                    targetAudience: 'Finance Directors & Accounts Payable',
+                    tone: 'professional'
+                  }}
+                  onContentGenerated={(content) => {
+                    handleAiContentAccepted(content);
+                  }}
+                />
+              </div>
+            )}
+
+            {/* Manual Content Editor Mode */}
+            {contentMode === 'manual' && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                      Subject Line *
+                    </label>
+                    <input
+                      type="text"
+                      value={subject}
+                      onChange={(e) => setSubject(e.target.value)}
+                      className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-1 focus:ring-indigo-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                      Preheader Preview Text
+                    </label>
+                    <input
+                      type="text"
+                      value={preheader}
+                      onChange={(e) => setPreheader(e.target.value)}
+                      className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-1 focus:ring-indigo-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                      Headline / Title
+                    </label>
+                    <input
+                      type="text"
+                      value={headline}
+                      onChange={(e) => setHeadline(e.target.value)}
+                      className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-1 focus:ring-indigo-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                      Greeting
+                    </label>
+                    <input
+                      type="text"
+                      value={greeting}
+                      onChange={(e) => setGreeting(e.target.value)}
+                      className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-1 focus:ring-indigo-500"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                      Body Paragraphs (Line by line)
+                    </label>
+                    <textarea
+                      rows={4}
+                      value={bodyParagraphs.join('\n\n')}
+                      onChange={(e) => setBodyParagraphs(e.target.value.split('\n\n'))}
+                      className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:ring-1 focus:ring-indigo-500 font-sans"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                      Key Benefits / Ledger Bullet Points
+                    </label>
+                    <textarea
+                      rows={3}
+                      value={bulletPoints.join('\n')}
+                      onChange={(e) => setBulletPoints(e.target.value.split('\n'))}
+                      className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:ring-1 focus:ring-indigo-500 font-sans"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                        Call-To-Action Text
+                      </label>
+                      <input
+                        type="text"
+                        value={ctaText}
+                        onChange={(e) => setCtaText(e.target.value)}
+                        className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:ring-1 focus:ring-indigo-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                        CTA Action URL
+                      </label>
+                      <input
+                        type="text"
+                        value={ctaUrl}
+                        onChange={(e) => setCtaUrl(e.target.value)}
+                        className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:ring-1 focus:ring-indigo-500"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* STEP 4: TEMPLATE SELECTION */}
+        {currentStep === 4 && (
+          <div className="space-y-6">
+            <div>
+              <h3 className="text-sm font-bold text-slate-900">Select Approved Email Template</h3>
+              <p className="text-xs text-slate-500">
+                Choose a table-based, cross-client responsive template. Structured JSON merges cleanly into placeholders.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {EMAIL_TEMPLATES_LIST.map(tmpl => {
+                const isSelected = selectedTemplateId === tmpl.id;
+                return (
+                  <div
+                    key={tmpl.id}
+                    onClick={() => setSelectedTemplateId(tmpl.id)}
+                    className={`cursor-pointer rounded-xl border p-4 transition-all ${
+                      isSelected
+                        ? 'border-indigo-600 bg-indigo-50/50 shadow-md ring-2 ring-indigo-500/20'
+                        : 'border-slate-200 hover:border-slate-300 bg-white'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-bold text-slate-900">{tmpl.name}</span>
+                      {isSelected && <CheckCircle2 className="w-4 h-4 text-indigo-600" />}
+                    </div>
+                    <p className="text-xs text-slate-500 line-clamp-2">{tmpl.description}</p>
+                    <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-400">
+                      <span>Category: {tmpl.category}</span>
+                      <span className="text-indigo-600 font-semibold">Select</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* STEP 5: PREVIEW */}
+        {currentStep === 5 && (
+          <div className="space-y-4">
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+              <div className="flex items-center gap-2 bg-slate-100 p-1 rounded-lg border border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => setDevicePreview('desktop')}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-md flex items-center gap-1.5 transition-colors ${
+                    devicePreview === 'desktop' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <Monitor className="w-3.5 h-3.5" /> Desktop (600px)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDevicePreview('mobile')}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-md flex items-center gap-1.5 transition-colors ${
+                    devicePreview === 'mobile' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <Smartphone className="w-3.5 h-3.5" /> Mobile (375px)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDevicePreview('code')}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-md flex items-center gap-1.5 transition-colors ${
+                    devicePreview === 'code' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <Code className="w-3.5 h-3.5" /> HTML Source
+                </button>
+              </div>
+
+              {/* Sample Contact Selector */}
+              <div className="flex items-center gap-2 text-xs">
+                <span className="text-slate-500">Preview with Contact:</span>
+                <select
+                  value={previewContactIndex}
+                  onChange={(e) => setPreviewContactIndex(Number(e.target.value))}
+                  className="px-2.5 py-1 text-xs border border-slate-300 rounded-md bg-white"
+                >
+                  {contacts.slice(0, 10).map((c, idx) => (
+                    <option key={c.id} value={idx}>
+                      {c.firstName} {c.lastName} ({c.companyName})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Rendered Container */}
+            <div className="bg-slate-200/80 p-6 rounded-xl flex justify-center items-start min-h-[420px] overflow-auto">
+              {devicePreview === 'desktop' && (
+                <div className="w-[620px] bg-white rounded-lg shadow-md border border-slate-300 p-6">
+                  <div dangerouslySetInnerHTML={{ __html: renderedHtml }} />
+                </div>
+              )}
+
+              {devicePreview === 'mobile' && (
+                <div className="w-[375px] bg-white rounded-2xl shadow-xl border-4 border-slate-800 p-4 min-h-[520px]">
+                  <div dangerouslySetInnerHTML={{ __html: renderedHtml }} />
+                </div>
+              )}
+
+              {devicePreview === 'code' && (
+                <div className="w-full bg-slate-900 text-emerald-400 p-4 rounded-lg font-mono text-xs overflow-x-auto max-h-[480px]">
+                  <pre>{renderedHtml}</pre>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* STEP 6: TEST EMAIL */}
+        {currentStep === 6 && (
+          <div className="max-w-2xl mx-auto space-y-6">
+            <div className="p-5 bg-white rounded-xl border border-slate-200 shadow-xs space-y-4">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">Deliverability Pre-Flight & Test Email</h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Verify how your campaign renders in actual mail clients and check spam trigger score.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                  Recipient Test Address
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="email"
+                    value={testEmailAddress}
+                    onChange={(e) => setTestEmailAddress(e.target.value)}
+                    placeholder="Enter test email address..."
+                    className="flex-1 px-3.5 py-2 text-sm border border-slate-300 rounded-lg focus:ring-1 focus:ring-indigo-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleSendTest}
+                    disabled={isSendingTest}
+                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 transition-colors"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    {isSendingTest ? 'Sending...' : 'Send Real Test Email'}
+                  </button>
+                </div>
+                <p className="text-[11px] text-slate-400 mt-1">
+                  Test dispatches are logged to the interactive <strong>Virtual Test Inbox</strong> modal in the top header.
+                </p>
+              </div>
+
+              {testEmailSentSuccess && (
+                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-xs text-emerald-800 flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                  <span>Test message dispatched successfully to {testEmailAddress}.</span>
+                </div>
+              )}
+
+              {/* Spam & Deliverability Audit */}
+              <div className="p-4 bg-slate-50 rounded-lg border border-slate-200 space-y-3">
+                <div className="flex justify-between items-center text-xs">
+                  <span className="font-semibold text-slate-700">Spam Score & Deliverability Assessment</span>
+                  <span className="font-bold text-emerald-600">{deliverabilityScore.score}/100</span>
+                </div>
+                <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden">
+                  <div 
+                    className="bg-emerald-500 h-full rounded-full" 
+                    style={{ width: `${deliverabilityScore.score}%` }} 
+                  />
+                </div>
+                <div className="text-[11px] text-slate-500">
+                  Authentication Checks: SPF Pass • DKIM 2048-bit Signed • DMARC Enforced • Image-to-Text balanced
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* STEP 7: REVIEW (PRE-SEND VALIDATION) */}
+        {currentStep === 7 && (
+          <div className="max-w-3xl mx-auto space-y-6">
+            <div className="p-5 bg-white rounded-xl border border-slate-200 shadow-xs space-y-4">
+              <div className="flex items-center justify-between border-b pb-3">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">Pre-Send Automated Validation Checklist</h3>
+                  <p className="text-xs text-slate-500">All 5 critical deliverability criteria must pass before scheduling.</p>
+                </div>
+                <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${
+                  validationReport.isValid ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-rose-50 text-rose-700 border border-rose-200'
+                }`}>
+                  {validationReport.isValid ? 'ALL CHECKS PASSED' : 'CORRECTIONS REQUIRED'}
+                </span>
+              </div>
+
+              {/* The 5 Required Checks */}
+              <div className="space-y-2.5 text-xs">
+                <div className="flex items-center justify-between p-2.5 bg-slate-50 rounded-lg border border-slate-200">
+                  <span className="text-slate-700 font-medium">1. Subject Line Exists & Formatted</span>
+                  {validationReport.checks.subjectExists ? (
+                    <span className="flex items-center gap-1 text-emerald-600 font-semibold"><CheckCircle2 className="w-4 h-4" /> Valid</span>
+                  ) : (
+                    <span className="flex items-center gap-1 text-rose-600 font-semibold"><AlertTriangle className="w-4 h-4" /> Missing</span>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-between p-2.5 bg-slate-50 rounded-lg border border-slate-200">
+                  <span className="text-slate-700 font-medium">2. HTML Email Content Present & Balanced</span>
+                  {validationReport.checks.htmlExists ? (
+                    <span className="flex items-center gap-1 text-emerald-600 font-semibold"><CheckCircle2 className="w-4 h-4" /> Valid</span>
+                  ) : (
+                    <span className="flex items-center gap-1 text-rose-600 font-semibold"><AlertTriangle className="w-4 h-4" /> Missing</span>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-between p-2.5 bg-slate-50 rounded-lg border border-slate-200">
+                  <span className="text-slate-700 font-medium">3. From Email Configured & Verified</span>
+                  {validationReport.checks.fromEmailConfigured ? (
+                    <span className="flex items-center gap-1 text-emerald-600 font-semibold"><CheckCircle2 className="w-4 h-4" /> Valid ({fromEmail})</span>
+                  ) : (
+                    <span className="flex items-center gap-1 text-rose-600 font-semibold"><AlertTriangle className="w-4 h-4" /> Invalid</span>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-between p-2.5 bg-slate-50 rounded-lg border border-slate-200">
+                  <span className="text-slate-700 font-medium">4. Mandatory Unsubscribe URL Included</span>
+                  {validationReport.checks.unsubscribeUrlExists ? (
+                    <span className="flex items-center gap-1 text-emerald-600 font-semibold"><CheckCircle2 className="w-4 h-4" /> Compliant</span>
+                  ) : (
+                    <span className="flex items-center gap-1 text-rose-600 font-semibold"><AlertTriangle className="w-4 h-4" /> Non-compliant</span>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-between p-2.5 bg-slate-50 rounded-lg border border-slate-200">
+                  <span className="text-slate-700 font-medium">5. Target Recipient Count &gt; 0 (Post-Exclusions)</span>
+                  {validationReport.checks.recipientCountValid ? (
+                    <span className="flex items-center gap-1 text-emerald-600 font-semibold"><CheckCircle2 className="w-4 h-4" /> {validationReport.counts.validRecipientsCount} Deliverable</span>
+                  ) : (
+                    <span className="flex items-center gap-1 text-rose-600 font-semibold"><AlertTriangle className="w-4 h-4" /> 0 Recipients</span>
+                  )}
+                </div>
+              </div>
+
+              {/* Warnings and Exclusions Summary */}
+              {validationReport.warnings.length > 0 && (
+                <div className="p-3 bg-amber-50 rounded-lg border border-amber-200 text-xs text-amber-800 space-y-1">
+                  <div className="font-bold flex items-center gap-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5" /> Exclusion Notices:
+                  </div>
+                  {validationReport.warnings.map((w, i) => (
+                    <div key={i} className="pl-5">• {w}</div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* STEP 8: SCHEDULE & APPROVAL */}
+        {currentStep === 8 && (
+          <div className="max-w-3xl mx-auto space-y-6">
+            <div className="p-5 bg-white rounded-xl border border-slate-200 shadow-xs space-y-6">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">Workflow Approval & Delivery Dispatch</h3>
+                <p className="text-xs text-slate-500">
+                  Approved campaigns generate an immutable snapshot in <code className="text-indigo-600">campaign_recipients</code> to insulate from future rule changes.
+                </p>
+              </div>
+
+              {/* Manager Approval Box */}
+              <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="text-xs font-bold text-slate-800 flex items-center gap-2">
+                    <ShieldCheck className="w-4 h-4 text-indigo-600" />
+                    Manager Review & Recipient Snapshot Authorization
+                  </div>
+                  <span className="text-[11px] text-slate-400">Segregation of Duties Enforced</span>
+                </div>
+                <p className="text-xs text-slate-600">
+                  Approving this campaign will freeze <strong className="text-slate-900">{validationReport.counts.validRecipientsCount}</strong> recipients and their current personalization fields into the database.
+                </p>
+                
+                <div className="pt-1 flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setIsApprovedByManager(!isApprovedByManager)}
+                    className={`px-3 py-2 text-xs font-semibold rounded-lg border flex items-center gap-2 transition-colors ${
+                      isApprovedByManager
+                        ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                        : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
+                    }`}
+                  >
+                    <CheckCircle2 className="w-4 h-4" />
+                    {isApprovedByManager ? 'Approved by Marketing Director' : 'Sign-off as Authorized Manager'}
+                  </button>
+                  {isApprovedByManager && (
+                    <span className="text-xs text-emerald-700 font-medium">
+                      Snapshot frozen with 100% compliance.
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* Dispatch Timing Options */}
+              <div className="space-y-3">
+                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider">
+                  Dispatch Timing
+                </label>
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setSendTiming('immediate')}
+                    className={`p-3.5 rounded-lg border text-left transition-all ${
+                      sendTiming === 'immediate'
+                        ? 'border-indigo-600 bg-indigo-50/70 ring-1 ring-indigo-500'
+                        : 'border-slate-200 bg-white'
+                    }`}
+                  >
+                    <div className="text-xs font-bold text-slate-900">Send Immediately</div>
+                    <div className="text-[11px] text-slate-500 mt-0.5">Queue jobs for instant dispatch</div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setSendTiming('scheduled')}
+                    className={`p-3.5 rounded-lg border text-left transition-all ${
+                      sendTiming === 'scheduled'
+                        ? 'border-indigo-600 bg-indigo-50/70 ring-1 ring-indigo-500'
+                        : 'border-slate-200 bg-white'
+                    }`}
+                  >
+                    <div className="text-xs font-bold text-slate-900">Schedule for Later</div>
+                    <div className="text-[11px] text-slate-500 mt-0.5">Automated queue timer</div>
+                  </button>
+                </div>
+
+                {sendTiming === 'scheduled' && (
+                  <div className="pt-2">
+                    <label className="block text-xs font-medium text-slate-600 mb-1">
+                      Choose Transmission Date & Time (UTC)
+                    </label>
+                    <input
+                      type="datetime-local"
+                      value={scheduledDateTime}
+                      onChange={(e) => setScheduledDateTime(e.target.value)}
+                      className="px-3 py-2 text-xs border border-slate-300 rounded-lg bg-white"
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* ESP & Queue Throttling Settings */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2 border-t border-slate-200">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-600 uppercase mb-1">
+                    ESP Provider
+                  </label>
+                  <select
+                    value={espProvider}
+                    onChange={(e) => setEspProvider(e.target.value as any)}
+                    className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg bg-white"
+                  >
+                    <option value="amazon_ses">Amazon SES</option>
+                    <option value="brevo">Brevo (Sendinblue)</option>
+                    <option value="sendgrid">Twilio SendGrid</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-600 uppercase mb-1">
+                    Chunk Size
+                  </label>
+                  <input
+                    type="number"
+                    value={chunkSize}
+                    onChange={(e) => setChunkSize(Number(e.target.value))}
+                    className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-600 uppercase mb-1">
+                    Rate Limit (msg/sec)
+                  </label>
+                  <input
+                    type="number"
+                    value={rateLimit}
+                    onChange={(e) => setRateLimit(Number(e.target.value))}
+                    className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+      </div>
+
+      {/* Wizard Step Footer Navigation */}
+      <div className="px-6 py-4 border-t border-slate-200 bg-slate-50/70 flex items-center justify-between">
+        <button
+          type="button"
+          onClick={() => setCurrentStep(prev => Math.max(1, prev - 1) as any)}
+          disabled={currentStep === 1}
+          className="px-4 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5"
+        >
+          <ArrowLeft className="w-3.5 h-3.5" />
+          Previous
+        </button>
+
+        <div className="flex items-center gap-2">
+          {currentStep < 8 ? (
+            <button
+              type="button"
+              onClick={() => setCurrentStep(prev => Math.min(8, prev + 1) as any)}
+              className="px-5 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg shadow-xs flex items-center gap-1.5 transition-colors"
+            >
+              Next Step
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          ) : (
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => onSubmitReview(buildCampaignPayload('REVIEW'))}
+                className="px-4 py-2 text-xs font-semibold text-amber-800 bg-amber-100 hover:bg-amber-200 border border-amber-300 rounded-lg transition-colors"
+              >
+                Submit for Approval
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const payload = buildCampaignPayload(sendTiming === 'scheduled' ? 'SCHEDULED' : 'PROCESSING');
+                  onApproveAndDispatch(payload, sendTiming === 'scheduled' ? scheduledDateTime : null);
+                }}
+                disabled={!validationReport.isValid}
+                className="px-5 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg shadow-sm flex items-center gap-1.5 transition-colors"
+              >
+                <Send className="w-3.5 h-3.5" />
+                {sendTiming === 'scheduled' ? 'Confirm & Schedule Campaign' : 'Approve & Dispatch Now'}
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+    </div>
+  );
+};
